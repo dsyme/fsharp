@@ -256,7 +256,6 @@ namespace Microsoft.FSharp.Control
         /// Call the success continuation of the asynchronous execution context after checking for
         /// cancellation and trampoline hijacking.
         //   - Cancellation check
-        //   - Hijack check
         member ctxt.OnSuccess result =
             if ctxt.IsCancellationRequested then
                 ctxt.OnCancellation ()
@@ -350,7 +349,6 @@ namespace Microsoft.FSharp.Control
         /// 'finally' and 'when cancelled'.
         ///
         /// - Apply 'userCode' to argument with exception protection
-        /// - Hijack check before invoking the continuation
         [<DebuggerHidden>]
         let CallThenContinue userCode arg (ctxt: AsyncActivation<_>) : AsyncReturn =
             let mutable result = Unchecked.defaultof<_>
@@ -373,7 +371,6 @@ namespace Microsoft.FSharp.Control
         /// Note: direct calls to this function end up in user assemblies via inlining
         ///
         /// - Apply 'part2' to argument with exception protection
-        /// - Hijack check before invoking the resulting computation
         [<DebuggerHidden>]
         let CallThenInvoke (ctxt: AsyncActivation<_>) result1 part2 : AsyncReturn =
             let mutable result = Unchecked.defaultof<_>
@@ -391,29 +388,10 @@ namespace Microsoft.FSharp.Control
             else
                 fake()
 
-        /// Like `CallThenInvoke` but does not do a hijack check for historical reasons (exact code compat)
-        [<DebuggerHidden>]
-        let CallThenInvokeNoHijackCheck (ctxt: AsyncActivation<_>) result1 userCode =
-            let mutable res = Unchecked.defaultof<_>
-            let mutable ok = false
-
-            try
-                res <- userCode result1
-                ok <- true
-            finally
-                if not ok then
-                    ctxt.OnExceptionRaised()
-
-            if ok then
-                res.Invoke ctxt
-            else
-                fake()
-
         /// Apply 'filterFunction' to 'arg'. If the result is 'Some' invoke the resulting computation. If the result is 'None'
         /// then send 'result1' to the exception continuation.
         ///
         /// - Apply 'filterFunction' to argument with exception protection
-        /// - Hijack check before invoking the resulting computation or exception continuation
         [<DebuggerHidden>]
         let CallFilterThenInvoke (ctxt: AsyncActivation<'T>) filterFunction (edi: ExceptionDispatchInfo) : AsyncReturn =
             let mutable resOpt = None
@@ -451,8 +429,6 @@ namespace Microsoft.FSharp.Control
         /// 
         /// Note: direct calls to this function end up in user assemblies via inlining
         ///   - Initial cancellation check
-        ///   - Initial hijack check (see Invoke)
-        ///   - No hijack check after applying 'part2' to argument (see CallThenInvoke)
         ///   - No cancellation check after applying 'part2' to argument (see CallThenInvoke)
         ///   - Apply 'part2' to argument with exception protection (see CallThenInvoke)
         [<DebuggerHidden>]
@@ -463,13 +439,11 @@ namespace Microsoft.FSharp.Control
                 // Note, no cancellation check is done before calling 'part2'.  This is
                 // because part1 may bind a resource, while part2 is a try/finally, and, if
                 // the resource creation completes, we want to enter part2 before cancellation takes effect.
-                Invoke part1 (ctxt.WithContinuation(fun result1 -> CallThenInvokeNoHijackCheck ctxt result1 part2))
+                Invoke part1 (ctxt.WithContinuation(fun result1 -> CallThenInvoke ctxt result1 part2))
 
         /// Re-route all continuations to execute the finally function.
         ///   - Cancellation check after 'entering' the try/finally and before running the body
-        ///   - Hijack check after 'entering' the try/finally and before running the body (see Invoke)
         ///   - Run 'finallyFunction' with exception protection (see CallThenContinue)
-        ///   - Hijack check before any of the continuations (see CallThenContinue)
         [<DebuggerHidden>]
         let TryFinally (ctxt: AsyncActivation<'T>) (computation: Async<'T>) finallyFunction =
             // Note, we don't test for cancellation before entering a try/finally. This prevents
@@ -499,10 +473,8 @@ namespace Microsoft.FSharp.Control
         /// Re-route the exception continuation to call to catchFunction. If catchFunction returns None then call the exception continuation.
         /// If it returns Some, invoke the resulting async.
         ///   - Cancellation check before entering the try
-        ///   - No hijack check after 'entering' the try/with
         ///   - Cancellation check before applying the 'catchFunction'
         ///   - Apply `catchFunction' to argument with exception protection (see CallFilterThenInvoke)
-        ///   - Hijack check before invoking the resulting computation or exception continuation (see CallFilterThenInvoke)
         [<DebuggerHidden>]
         let TryWith (ctxt: AsyncActivation<'T>) (computation: Async<'T>) catchFunction =
             if ctxt.IsCancellationRequested then
@@ -519,7 +491,6 @@ namespace Microsoft.FSharp.Control
 
         /// Make an async for an AsyncResult
         //   - No cancellation check
-        //   - No hijack check
         let CreateAsyncResultAsync res =
             MakeAsync (fun ctxt ->
                 match res with
@@ -529,15 +500,12 @@ namespace Microsoft.FSharp.Control
 
         /// Generate async computation which calls its continuation with the given result
         ///   - Cancellation check (see OnSuccess)
-        ///   - Hijack check (see OnSuccess)
         let inline CreateReturnAsync res =
             // Note: this code ends up in user assemblies via inlining
             MakeAsync (fun ctxt -> ctxt.OnSuccess res)
 
         /// Runs the first process, takes its result, applies f and then runs the new process produced.
         ///   - Initial cancellation check (see Bind)
-        ///   - Initial hijack check (see Bind)
-        ///   - No hijack check after applying 'part2' to argument (see Bind)
         ///   - No cancellation check after applying 'part2' to argument (see Bind)
         ///   - Apply 'part2' to argument with exception protection (see Bind)
         let inline CreateBindAsync part1 part2  =
@@ -547,7 +515,6 @@ namespace Microsoft.FSharp.Control
 
         /// Call the given function with exception protection.
         ///   - No initial cancellation check
-        ///   - Hijack check after applying part2 to argument (see CallThenInvoke)
         let inline CreateCallAsync part2 result1 =
             // Note: this code ends up in user assemblies via inlining
             MakeAsync (fun ctxt ->
@@ -555,7 +522,6 @@ namespace Microsoft.FSharp.Control
 
         /// Call the given function with exception protection.
         ///   - Initial cancellation check
-        ///   - Hijack check after applying computation to argument (see CallThenInvoke)
         ///   - Apply 'computation' to argument with exception protection (see CallThenInvoke)
         let inline CreateDelayAsync computation =
             // Note: this code ends up in user assemblies via inlining
@@ -564,8 +530,6 @@ namespace Microsoft.FSharp.Control
 
         /// Implements the sequencing construct of async computation expressions
         ///   - Initial cancellation check (see CreateBindAsync)
-        ///   - Initial hijack check (see CreateBindAsync)
-        ///   - No hijack check after applying 'part2' to argument (see CreateBindAsync)
         ///   - No cancellation check after applying 'part2' to argument (see CreateBindAsync)
         ///   - Apply 'part2' to argument with exception protection (see CreateBindAsync)
         let inline CreateSequentialAsync part1 part2 =
@@ -574,7 +538,6 @@ namespace Microsoft.FSharp.Control
 
         /// Create an async for a try/finally
         ///   - Cancellation check after 'entering' the try/finally and before running the body
-        ///   - Hijack check after 'entering' the try/finally and before running the body (see TryFinally)
         ///   - Apply 'finallyFunction' with exception protection (see TryFinally)
         let inline CreateTryFinallyAsync finallyFunction computation =
             MakeAsync (fun ctxt -> TryFinally ctxt computation finallyFunction)
@@ -583,7 +546,6 @@ namespace Microsoft.FSharp.Control
         ///   - Cancellation check before entering the try (see TryWith)
         ///   - Cancellation check before entering the with (see TryWith)
         ///   - Apply `filterFunction' to argument with exception protection (see TryWith)
-        ///   - Hijack check before invoking the resulting computation or exception continuation
         let inline CreateTryWithFilterAsync filterFunction computation =
             MakeAsync (fun ctxt -> TryWith ctxt computation filterFunction)
 
@@ -591,16 +553,13 @@ namespace Microsoft.FSharp.Control
         ///   - Cancellation check before entering the try (see TryWith)
         ///   - Cancellation check before entering the with (see TryWith)
         ///   - Apply `catchFunction' to argument with exception protection (see TryWith)
-        ///   - Hijack check before invoking the resulting computation or exception continuation
         let inline CreateTryWithAsync catchFunction computation =
             MakeAsync (fun ctxt -> TryWith ctxt computation (fun exn -> Some (catchFunction exn)))
 
         /// Call the finallyFunction if the computation results in a cancellation, and then continue with cancellation.
         /// If the finally function gives an exception then continue with cancellation regardless.
         ///   - No cancellation check before entering the when-cancelled
-        ///   - No hijack check before entering the when-cancelled
         ///   - Apply `finallyFunction' to argument with exception protection (see CallThenContinue)
-        ///   - Hijack check before continuing with cancellation (see CallThenContinue)
         let CreateWhenCancelledAsync (finallyFunction: OperationCanceledException -> unit) computation =
             MakeAsync (fun ctxt ->
                 let ccont = ctxt.ccont
@@ -615,7 +574,6 @@ namespace Microsoft.FSharp.Control
 
         /// A single pre-allocated computation that returns a unit result
         ///   - Cancellation check (see CreateReturnAsync)
-        ///   - Hijack check (see CreateReturnAsync)
         let unitAsync =
             CreateReturnAsync()
 
@@ -624,28 +582,21 @@ namespace Microsoft.FSharp.Control
         ///   - No initial cancellation check before applying computation to its argument. See CreateTryFinallyAsync
         ///     and CreateCallAsync. We enter the try/finally before any cancel checks.
         ///   - Cancellation check after 'entering' the implied try/finally and before running the body  (see CreateTryFinallyAsync)
-        ///   - Hijack check after 'entering' the implied try/finally and before running the body  (see CreateTryFinallyAsync)
         ///   - Run 'disposeFunction' with exception protection (see CreateTryFinallyAsync)
         let CreateUsingAsync (resource:'T :> IDisposable) (computation:'T -> Async<'a>) : Async<'a> =
             let disposeFunction () = Microsoft.FSharp.Core.LanguagePrimitives.IntrinsicFunctions.Dispose resource
             CreateTryFinallyAsync disposeFunction (CreateCallAsync computation resource)
 
         ///   - Initial cancellation check (see CreateBindAsync)
-        ///   - Initial hijack check (see CreateBindAsync)
         ///   - Cancellation check after (see unitAsync)
-        ///   - No hijack check after (see unitAsync)
         let inline CreateIgnoreAsync computation =
             CreateBindAsync computation (fun _ -> unitAsync)
 
         /// Implement the while loop construct of async computation expressions
         ///   - No initial cancellation check before first execution of guard
-        ///   - No initial hijack check before first execution of guard
         ///   - No cancellation check before each execution of guard (see CreateBindAsync)
-        ///   - Hijack check before each execution of guard (see CreateBindAsync)
         ///   - Cancellation check before each execution of the body after guard (CreateBindAsync)
-        ///   - No hijack check before each execution of the body after guard (see CreateBindAsync)
         ///   - Cancellation check after guard fails (see unitAsync)
-        ///   - Hijack check after guard fails (see unitAsync)
         ///   - Apply 'guardFunc' with exception protection (see ProtectCode)
         //
         // Note: There are allocations during loop set up, but no allocations during iterations of the loop
@@ -660,11 +611,8 @@ namespace Microsoft.FSharp.Control
 #if REDUCED_ALLOCATIONS_BUT_RUNS_SLOWER
         /// Implement the while loop construct of async computation expressions
         ///   - Initial cancellation check before each execution of guard
-        ///   - No initial hijack check before each execution of guard
         ///   - No cancellation check before each execution of the body after guard
-        ///   - Hijack check before each execution of the body after guard (see Invoke)
         ///   - Cancellation check after guard fails (see OnSuccess)
-        ///   - Hijack check after guard fails (see OnSuccess)
         ///   - Apply 'guardFunc' with exception protection (see ProtectCode)
         //
         // Note: There are allocations during loop set up, but no allocations during iterations of the loop
@@ -690,7 +638,6 @@ namespace Microsoft.FSharp.Control
         ///   - No initial cancellation check before GetEnumerator call.
         ///   - No initial cancellation check before entering protection of implied try/finally
         ///   - Cancellation check after 'entering' the implied try/finally and before loop
-        ///   - Hijack check after 'entering' the implied try/finally and after MoveNext call
         ///   - Do not apply 'GetEnumerator' with exception protection. However for an 'async'
         ///     in an 'async { ... }' the exception protection will be provided by the enclosing
         //      Delay or Bind or similar construct.
