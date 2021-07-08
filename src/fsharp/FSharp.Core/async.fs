@@ -76,9 +76,6 @@ namespace Microsoft.FSharp.Control
     [<AllowNullLiteral>]
     type Trampoline() =
 
-        [<Literal>]
-        static let bindLimitBeforeHijack = 300
-
         [<ThreadStatic; DefaultValue>]
         static val mutable private thisThreadHasTrampoline: bool
 
@@ -87,7 +84,6 @@ namespace Microsoft.FSharp.Control
 
         let mutable storedCont = None
         let mutable storedExnCont = None
-        let mutable bindCount = 0
 
         /// Use this trampoline on the synchronous stack if none exists, and execute
         /// the given function. The function might write its continuation into the trampoline.
@@ -124,16 +120,9 @@ namespace Microsoft.FSharp.Control
                 Trampoline.thisThreadHasTrampoline <- thisThreadHadTrampoline
             AsyncReturn.Fake()
 
-        /// Increment the counter estimating the size of the synchronous stack and
-        /// return true if time to jump on trampoline.
-        member _.IncrementBindCount() =
-            bindCount <- bindCount + 1
-            bindCount >= bindLimitBeforeHijack
-
         /// Prepare to abandon the synchronous stack of the current execution and save the continuation in the trampoline.
         member _.Set action =
             assert storedCont.IsNone
-            bindCount <- 0
             storedCont <- Some action
             AsyncReturn.Fake()
 
@@ -192,14 +181,6 @@ namespace Microsoft.FSharp.Control
         /// Save the exception continuation during propagation of an exception, or prior to raising an exception
         member inline _.OnExceptionRaised econt =
             trampoline.OnExceptionRaised econt
-
-        /// Call a continuation, but first check if an async computation should trampoline on its synchronous stack.
-        member inline _.HijackCheckThenCall (cont: 'T -> AsyncReturn) res =
-            if trampoline.IncrementBindCount() then
-                trampoline.Set (fun () -> cont res)
-            else
-                // NOTE: this must be a tailcall
-                cont res
 
     [<NoEquality; NoComparison>]
     [<AutoSerializable(false)>]
@@ -272,10 +253,6 @@ namespace Microsoft.FSharp.Control
         member _.OnCancellation () =
             contents.aux.ccont (OperationCanceledException (contents.aux.token))
 
-        /// Check for trampoline hijacking.
-        member inline _.HijackCheckThenCall cont arg =
-            contents.aux.trampolineHolder.HijackCheckThenCall cont arg
-
         /// Call the success continuation of the asynchronous execution context after checking for
         /// cancellation and trampoline hijacking.
         //   - Cancellation check
@@ -284,7 +261,7 @@ namespace Microsoft.FSharp.Control
             if ctxt.IsCancellationRequested then
                 ctxt.OnCancellation ()
             else
-                ctxt.HijackCheckThenCall ctxt.cont result
+                ctxt.cont result
 
         /// Save the exception continuation during propagation of an exception, or prior to raising an exception
         member _.OnExceptionRaised() =
@@ -367,7 +344,7 @@ namespace Microsoft.FSharp.Control
         // Note: direct calls to this function may end up in user assemblies via inlining
         [<DebuggerHidden>]
         let Invoke (computation: Async<'T>) (ctxt: AsyncActivation<_>) : AsyncReturn =
-            ctxt.HijackCheckThenCall computation.Invoke ctxt
+            computation.Invoke ctxt
 
         /// Apply 'userCode' to 'arg'. If no exception is raised then call the normal continuation.  Used to implement
         /// 'finally' and 'when cancelled'.
@@ -387,7 +364,7 @@ namespace Microsoft.FSharp.Control
                     ctxt.OnExceptionRaised()
 
             if ok then
-                ctxt.HijackCheckThenCall ctxt.cont result
+                ctxt.cont result
             else
                 fake()
 
@@ -452,7 +429,7 @@ namespace Microsoft.FSharp.Control
             if ok then
                 match resOpt with
                 | None ->
-                    ctxt.HijackCheckThenCall ctxt.econt edi
+                    ctxt.econt edi
                 | Some res ->
                     Invoke res ctxt
             else
